@@ -1,98 +1,58 @@
 import os
+import SimpleITK as sitk
 import numpy as np
-from pydicom.filereader import dcmread
-import nibabel as nib
-from nibabel.affines import from_matvec
 
-def get_sorted_slices(dicom_folder):
-    """Get DICOM slice files sorted by Z-position."""
-    files = []
-    for f in os.listdir(dicom_folder):
-        if f.endswith('.dcm'):
-            path = os.path.join(dicom_folder, f)
-            try:
-                ds = dcmread(path)
-                pos = ds.ImagePositionPatient
-                files.append((float(pos[2]), path))  # Sort by Z position
-            except Exception as e:
-                print(f"Skipping file {f}: {e}")
-    files.sort(key=lambda x: x[0])  # Sort slices by Z-coordinate
-    return [x[1] for x in files]
 
-def get_pixel_spacing(ds):
-    """Get pixel spacing in X and Y directions."""
-    if hasattr(ds, 'PixelSpacing'):
-        return [float(ds.PixelSpacing[1]), float(ds.PixelSpacing[0])]  # [x, y]
-    return [1.0, 1.0]
+def dcm2nii_sitk(path_read, path_save, output_name="data.nii.gz"):
+    """
+    Converts the DICOM series with the most images in the specified folder to a .nii.gz file.
 
-def get_slice_thickness(ds, next_ds=None):
-    """Estimate slice thickness (Z spacing)."""
-    if hasattr(ds, 'SliceThickness'):
-        return float(ds.SliceThickness)
-    if next_ds:
-        return np.linalg.norm(np.array(ds.ImagePositionPatient) - np.array(next_ds.ImagePositionPatient))
-    return 1.0
+    :param path_read: Path to the DICOM folder
+    :param path_save: Path where the NIfTI file will be saved
+    :param output_name: Name of the output file (e.g., 'data.nii.gz')
+    :return: Path to the saved NIfTI file, or None if no DICOM series was found
+    """
 
-def construct_affine(first_ds, last_ds, Z_slices, pixel_spacing, slice_thickness):
-    """Construct affine matrix based on orientation and spacing."""
-    x_dir = np.array(first_ds.ImageOrientationPatient[3:])  # Column direction
-    y_dir = np.array(first_ds.ImageOrientationPatient[:3])   # Row direction
+    # Create a reader for DICOM series
+    reader = sitk.ImageSeriesReader()
 
-    x_dir = -x_dir  # Reverse x direction vector
-    y_dir = -y_dir  # Reverse y direction vector
+    # Get all available DICOM series IDs in the directory
+    series_ids = reader.GetGDCMSeriesIDs(path_read)
 
-    dx = pixel_spacing[0]  # Pixel spacing along x-axis
-    dy = pixel_spacing[1]  # Pixel spacing along y-axis
+    if not series_ids:
+        print(f"Warning: No DICOM series found in {path_read}")
+        return None
 
-    first_pos = np.array(first_ds.ImagePositionPatient)
-    last_pos = np.array(last_ds.ImagePositionPatient)
-    z_dir = (last_pos - first_pos) / (Z_slices - 1)
+    # Find the series with the maximum number of slices
+    lengths = []
+    for series_id in series_ids:
+        dicom_files = reader.GetGDCMSeriesFileNames(path_read, series_id)
+        lengths.append(len(dicom_files))
 
-    R = np.eye(3)
-    R[:, 0] = x_dir * dx
-    R[:, 1] = y_dir * dy
-    R[:, 2] = z_dir
+    max_index = np.argmax(lengths)  # Index of the series with the most slices
+    dicom_files = reader.GetGDCMSeriesFileNames(path_read, series_ids[max_index])
 
-    affine = from_matvec(R, first_pos)
-    return affine
+    # Set the files to be read and execute the read operation
+    reader.SetFileNames(dicom_files)
+    image = reader.Execute()
 
-def dcm_to_nii(dicom_folder, nii_file_path):
-    """Convert a folder of DICOM slices to NIfTI format."""
-    dicom_files = get_sorted_slices(dicom_folder)
-    if not dicom_files:
-        raise ValueError("No valid DICOM files found.")
+    # Ensure the save directory exists
+    os.makedirs(path_save, exist_ok=True)
 
-    first_ds = dcmread(dicom_files[0])
-    last_ds = dcmread(dicom_files[-1])
+    # Construct the full output path
+    output_path = os.path.join(path_save, output_name)
 
-    shape_ref = dcmread(dicom_files[0]).pixel_array.shape
-    for f in dicom_files:
-        ds = dcmread(f)
-        assert ds.pixel_array.shape == shape_ref, f"Slice size mismatch: {f}"
+    # Write the image to disk
+    sitk.WriteImage(image, output_path)
+    print(f"Saved: {output_path}")
 
-    slices = []
-    for f in dicom_files:
-        ds = dcmread(f)
-        slices.append(ds.pixel_array.T)  # Transpose each slice to correct (X,Y) order
+    return output_path
 
-    # Build volume
-    volume = np.stack(slices, axis=0).astype(np.int16)  # shape: (S, Y, X)
-    volume = np.transpose(volume, (1, 2, 0))  # shape: (Y, X, S)
-    volume = np.transpose(volume, (1, 0, 2))  # shape: (X, Y, S)
 
-    pixel_spacing = get_pixel_spacing(first_ds)
-    slice_thickness = get_slice_thickness(first_ds, dcmread(dicom_files[1]) if len(dicom_files) > 1 else None)
+# Configuration settings
+DICOM_PATH = r"./dcm/20240201000938/201"  # Path to a patient's DICOM folder
+RESULT_PATH = r"./nii"  # Directory to save the NIfTI file
+OUTPUT_NAME = "patient.nii.gz"  # Output filename(patient.nii is recommended,too)
 
-    affine = construct_affine(first_ds, last_ds, volume.shape[2], pixel_spacing, slice_thickness)
-
-    # Skip reorientation step; directly save original affine and volume
-    nii_img = nib.Nifti1Image(volume, affine)
-
-    nib.save(nii_img, nii_file_path)
-    print(f"Conversion completed, file saved to: {nii_file_path}")
-
-if __name__ == "__main__":
-    dicom_folder = "./dcm/20240201000938/201"//Replace with the path of your dicom folder
-    nii_file_path = "./nii/volume.nii"
-    os.makedirs(os.path.dirname(nii_file_path), exist_ok=True)
-    dcm_to_nii(dicom_folder, nii_file_path)
+# Run the conversion
+dcm2nii_sitk(DICOM_PATH, RESULT_PATH, OUTPUT_NAME)
