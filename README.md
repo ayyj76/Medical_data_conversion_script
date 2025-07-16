@@ -3,7 +3,6 @@ Used for data conversion of DICOM, NIfTI, Numpy, etc.
 
 # Required libraries
 
-- `os`
 - `numpy`
 - `pydicom`
 - `nibabel`
