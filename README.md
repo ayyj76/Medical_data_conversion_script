@@ -7,3 +7,4 @@ Used for data conversion of DICOM, NIfTI, Numpy, etc.
 - `numpy`
 - `pydicom`
 - `nibabel`
+- `SimpleITK`
